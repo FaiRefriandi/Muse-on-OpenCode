@@ -201,6 +201,12 @@ Batas jujur dari desain ini:
 - Bridge sendiri hanya mendengarkan di `127.0.0.1`; yang ditunnel hanya 9Router.
 - Key worker dan key user adalah role terpisah. Rotasi dengan `bridge.py keydel` + `keygen` jika ada yang bocor.
 
+## Kredit
+
+- [9Router](https://github.com/decolua/9router) sebagai gateway API.
+- [OpenCode](https://opencode.ai) sebagai agen terminal.
+- [localhost.run](https://localhost.run) untuk tunnel gratis yang stabil.
+
 ## Lisensi
 
 MIT. Lihat [LICENSE](LICENSE).
