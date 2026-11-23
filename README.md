@@ -47,10 +47,15 @@ mkdir -p ~/muse-bridge/queue
 cp bridge.py ~/muse-bridge/
 cd ~/muse-bridge
 
-# Create the two API keys. Each key is printed ONCE. Save them to files with 600 permissions.
+# Create the two API keys. Each key is printed ONCE.
 python3 bridge.py keygen --role worker --label muse-vm
 python3 bridge.py keygen --role user   --label 9router
 ```
+
+Save the printed keys to these exact files, then `chmod 600` both:
+
+- worker key -> `~/muse-bridge/bridge-worker-key.txt` (the worker in step 4 reads this file)
+- user key -> `~/muse-bridge/bridge-user-key.txt` (you paste this into 9Router in step 3)
 
 Run it as a systemd service (`/etc/systemd/system/muse-bridge.service`):
 
@@ -106,7 +111,7 @@ systemctl daemon-reload && systemctl enable --now 9router
 
 ### 3. Register the bridge in 9Router
 
-Open the 9Router dashboard (forward port 20128 or use the tunnel from step 4 first), then:
+Open the 9Router dashboard (forward port 20128 or use the tunnel from step 5 first), then:
 
 1. **Provider node**: prefix `musevm`, API type `chat`, base URL `http://127.0.0.1:8765/v1`.
    - The prefix must not be `muse`; that name collides with 9Router's built-in Muse provider and breaks credential lookup.
@@ -124,7 +129,10 @@ Two rules that make or break the setup:
 - The worker must answer workspace questions with `tool_calls` (OpenCode executes them on your laptop), never by reading files inside the VM.
 - The worker reads its API key from a 600-permission file inside its shell commands only. The key value must never appear in chat, logs, or the repo.
 
-A 5-second queue poll (hook) plus the worker prompt is enough. A 1-minute scheduled fallback is optional; it burns tokens while idle.
+Concrete setup that works:
+
+- **Hook (recommended):** a Muse hook running [`examples/worker-queue-hook.sh`](examples/worker-queue-hook.sh) every 5 seconds. It only counts pending JSON files in `~/muse-bridge/queue/pending/` and wakes the agent with [`worker-prompt.md`](worker-prompt.md) when at least one job exists. Idle polling costs no tokens.
+- **Scheduled fallback (optional):** a 1-minute scheduled task with the same prompt. It burns tokens while idle, so keep it off unless you need redundancy.
 
 ### 5. Expose 9Router with a stable tunnel
 
@@ -138,9 +146,15 @@ ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o ServerAliveInterval=30 \
   -R 80:localhost:20128 localhost.run
 ```
 
-Run it as a systemd service (`muse-tunnel`) with `Restart=always`. The printed URL (for example `https://<subdomain>.app.lhr.life`) stays the same across reconnects.
+Run it as a systemd service (`muse-tunnel`, see [`examples/systemd/muse-tunnel.service`](examples/systemd/muse-tunnel.service)) with `Restart=always`, using [`examples/run-tunnel.sh`](examples/run-tunnel.sh) as the entry point. The printed URL (for example `https://<subdomain>.app.lhr.life`) stays the same across reconnects.
 
-> If your VM can only reach the internet through an HTTP CONNECT proxy, add a `ProxyCommand` that tunnels SSH through the proxy. Direct egress works in most setups.
+**If your VM only reaches the internet through an HTTP CONNECT proxy** (direct egress blocked or TLS-intercepted, which is common in sandboxed VMs), plain SSH will fail. Route it through the proxy instead:
+
+1. Copy [`connect_proxy.py`](connect_proxy.py) to `~/muse-bridge/`. It is a stdlib-only SSH `ProxyCommand` that opens an HTTP CONNECT tunnel and forwards the SSH stream.
+2. Create `~/muse-bridge/proxy.env` (600 permissions) with one line: `https_proxy=http://<proxy-user>:<proxy-pass>@<proxy-host>:<proxy-port>`.
+3. Keep the `ProxyCommand` option in `run-tunnel.sh` (it is already there) and load `proxy.env` via `EnvironmentFile` in the `muse-tunnel` unit.
+
+If direct egress works in your VM, delete the `ProxyCommand` option and skip `proxy.env`.
 
 ### 6. Configure OpenCode on your laptop
 
@@ -166,6 +180,18 @@ curl <YOUR-TUNNEL-URL>/v1/chat/completions \
 
 Then run `opencode`, pick model `muse-vm/muse`, and ask it to read a file in your workspace.
 
+## Surviving VM replacement
+
+Systemd units in `/etc/systemd/system/` do not survive a VM replacement; files in your home directory do. Keep a copy of all three units (`9router`, `muse-bridge`, `muse-tunnel`, templates in [`examples/systemd/`](examples/systemd/)) in `~/muse-bridge/systemd/`. After a replacement, restore everything with:
+
+```bash
+cp ~/muse-bridge/systemd/*.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now 9router muse-bridge muse-tunnel
+```
+
+Because the tunnel subdomain is bound to your SSH key, the URL (and your laptop `opencode.json`) stays valid. Optional but recommended: the watchdog hook in [`examples/watchdog-hook.sh`](examples/watchdog-hook.sh) polls every 30 seconds, restores missing units, starts inactive services, and only wakes you if something stays down or the URL changes.
+
 ## Usage notes
 
 - **Tool calls run on your laptop.** OpenCode's permission system is the gate. The example config auto-allows read-only tools (`read`, `glob`, `grep`, `webfetch`); edits and shell commands still ask.
@@ -188,6 +214,8 @@ Honest limits of this design:
 |---|---|
 | `401` from the tunnel URL | Wrong or missing 9Router API key in `opencode.json`. |
 | Connection error after VM restart | Tunnel down or URL rotated. Use key auth (step 5) for a stable URL; check `systemctl status muse-tunnel`. |
+| Everything down after VM replacement | Units in `/etc` were wiped. Restore from `~/muse-bridge/systemd/` (see "Surviving VM replacement"). |
+| SSH tunnel hangs or TLS errors from the VM | Direct egress is blocked or intercepted. Use the proxy route in step 5 (`connect_proxy.py` + `proxy.env`). |
 | "Missing API key" in OpenCode | The key must be embedded in `opencode.json` (as in the example) or exported in the same shell that launches OpenCode. |
 | Model only replies with text, never reads files | The worker is not returning `tool_calls`. Check the worker prompt (step 4) and that requests include `tools`. |
 | "[image omitted: model has no vision support]" | Upstream model name does not match a vision pattern in 9Router. Use `muse-spark` (step 3). |

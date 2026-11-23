@@ -47,10 +47,15 @@ mkdir -p ~/muse-bridge/queue
 cp bridge.py ~/muse-bridge/
 cd ~/muse-bridge
 
-# Buat dua API key. Setiap key dicetak SEKALI. Simpan ke file dengan permission 600.
+# Buat dua API key. Setiap key dicetak SEKALI.
 python3 bridge.py keygen --role worker --label muse-vm
 python3 bridge.py keygen --role user   --label 9router
 ```
+
+Simpan key yang tercetak ke file persis ini, lalu `chmod 600` keduanya:
+
+- key worker -> `~/muse-bridge/bridge-worker-key.txt` (worker di langkah 4 membaca file ini)
+- key user -> `~/muse-bridge/bridge-user-key.txt` (ini yang kamu tempel ke 9Router di langkah 3)
 
 Jalankan sebagai service systemd (`/etc/systemd/system/muse-bridge.service`):
 
@@ -106,7 +111,7 @@ systemctl daemon-reload && systemctl enable --now 9router
 
 ### 3. Daftarkan bridge di 9Router
 
-Buka dashboard 9Router (forward port 20128 atau pakai tunnel dari langkah 4 dulu), lalu:
+Buka dashboard 9Router (forward port 20128 atau pakai tunnel dari langkah 5 dulu), lalu:
 
 1. **Provider node**: prefix `musevm`, API type `chat`, base URL `http://127.0.0.1:8765/v1`.
    - Prefix tidak boleh `muse`; nama itu bertabrakan dengan provider Muse bawaan 9Router dan merusak pencarian kredensial.
@@ -124,7 +129,10 @@ Dua aturan yang menentukan berhasil tidaknya setup ini:
 - Worker harus menjawab pertanyaan workspace dengan `tool_calls` (OpenCode mengeksekusinya di laptopmu), bukan dengan membaca file di dalam VM.
 - Worker membaca API key-nya dari file berpermission 600 hanya di dalam perintah shell-nya. Nilai key tidak boleh muncul di chat, log, atau repo.
 
-Poll antrean tiap 5 detik (hook) plus prompt worker sudah cukup. Fallback terjadwal tiap 1 menit itu opsional; ia membakar token saat idle.
+Setup konkret yang terbukti jalan:
+
+- **Hook (disarankan):** hook Muse yang menjalankan [`examples/worker-queue-hook.sh`](examples/worker-queue-hook.sh) tiap 5 detik. Ia hanya menghitung file JSON pending di `~/muse-bridge/queue/pending/` dan membangunkan agen dengan [`worker-prompt.md`](worker-prompt.md) saat ada minimal satu job. Polling saat idle tidak memakan token.
+- **Fallback terjadwal (opsional):** scheduled task tiap 1 menit dengan prompt yang sama. Ia membakar token saat idle, jadi biarkan mati kecuali kamu butuh redundansi.
 
 ### 5. Ekspos 9Router dengan tunnel stabil
 
@@ -138,9 +146,15 @@ ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o ServerAliveInterval=30 \
   -R 80:localhost:20128 localhost.run
 ```
 
-Jalankan sebagai service systemd (`muse-tunnel`) dengan `Restart=always`. URL yang tercetak (misalnya `https://<subdomain>.app.lhr.life`) tetap sama melewati reconnect.
+Jalankan sebagai service systemd (`muse-tunnel`, lihat [`examples/systemd/muse-tunnel.service`](examples/systemd/muse-tunnel.service)) dengan `Restart=always`, memakai [`examples/run-tunnel.sh`](examples/run-tunnel.sh) sebagai entry point. URL yang tercetak (misalnya `https://<subdomain>.app.lhr.life`) tetap sama melewati reconnect.
 
-> Jika VM kamu hanya bisa ke internet lewat HTTP CONNECT proxy, tambahkan `ProxyCommand` yang meneruskan SSH lewat proxy itu. Di kebanyakan setup, egress langsung sudah cukup.
+**Jika VM kamu hanya bisa ke internet lewat HTTP CONNECT proxy** (egress langsung diblokir atau TLS-nya diintersepsi, umum di VM sandbox), SSH polos akan gagal. Lewatkan lewat proxy:
+
+1. Salin [`connect_proxy.py`](connect_proxy.py) ke `~/muse-bridge/`. Itu `ProxyCommand` SSH murni stdlib yang membuka tunnel HTTP CONNECT lalu meneruskan stream SSH.
+2. Buat `~/muse-bridge/proxy.env` (permission 600) berisi satu baris: `https_proxy=http://<proxy-user>:<proxy-pass>@<proxy-host>:<proxy-port>`.
+3. Biarkan opsi `ProxyCommand` di `run-tunnel.sh` (sudah ada) dan muat `proxy.env` lewat `EnvironmentFile` di unit `muse-tunnel`.
+
+Jika egress langsung bekerja di VM kamu, hapus opsi `ProxyCommand` dan lewati `proxy.env`.
 
 ### 6. Konfigurasi OpenCode di laptop
 
@@ -166,6 +180,18 @@ curl <YOUR-TUNNEL-URL>/v1/chat/completions \
 
 Lalu jalankan `opencode`, pilih model `muse-vm/muse`, dan minta ia membaca file di workspace-mu.
 
+## Bertahan dari penggantian VM
+
+Unit systemd di `/etc/systemd/system/` tidak selamat dari penggantian VM; file di home directory selamat. Simpan salinan ketiga unit (`9router`, `muse-bridge`, `muse-tunnel`, templatenya di [`examples/systemd/`](examples/systemd/)) di `~/muse-bridge/systemd/`. Setelah VM diganti, pulihkan semuanya dengan:
+
+```bash
+cp ~/muse-bridge/systemd/*.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now 9router muse-bridge muse-tunnel
+```
+
+Karena subdomain tunnel terikat ke SSH key kamu, URL-nya (dan `opencode.json` di laptop) tetap berlaku. Opsional tapi disarankan: hook watchdog di [`examples/watchdog-hook.sh`](examples/watchdog-hook.sh) polling tiap 30 detik, memulihkan unit yang hilang, menyalakan service yang mati, dan hanya membangunkanmu jika ada yang tetap mati atau URL berubah.
+
 ## Catatan pemakaian
 
 - **Tool call berjalan di laptopmu.** Sistem permission OpenCode adalah gerbangnya. Config contoh mengizinkan otomatis tool read-only (`read`, `glob`, `grep`, `webfetch`); edit dan perintah shell tetap bertanya.
@@ -188,6 +214,8 @@ Batas jujur dari desain ini:
 |---|---|
 | `401` dari URL tunnel | API key 9Router di `opencode.json` salah atau kosong. |
 | Connection error setelah VM restart | Tunnel mati atau URL berganti. Pakai autentikasi key (langkah 5) untuk URL stabil; cek `systemctl status muse-tunnel`. |
+| Semuanya mati setelah VM diganti | Unit di `/etc` terhapus. Pulihkan dari `~/muse-bridge/systemd/` (lihat "Bertahan dari penggantian VM"). |
+| Tunnel SSH hang atau error TLS dari VM | Egress langsung diblokir atau diintersepsi. Pakai jalur proxy di langkah 5 (`connect_proxy.py` + `proxy.env`). |
 | "Missing API key" di OpenCode | Key harus tertanam di `opencode.json` (seperti contoh) atau diekspor di shell yang sama dengan yang menjalankan OpenCode. |
 | Model hanya membalas teks, tidak pernah membaca file | Worker tidak mengembalikan `tool_calls`. Cek prompt worker (langkah 4) dan pastikan request menyertakan `tools`. |
 | "[image omitted: model has no vision support]" | Nama model upstream tidak cocok dengan pola vision di 9Router. Pakai `muse-spark` (langkah 3). |

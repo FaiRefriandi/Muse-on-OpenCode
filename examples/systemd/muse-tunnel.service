@@ -1,0 +1,14 @@
+[Unit]
+Description=SSH tunnel (localhost.run) to 9Router
+After=network.target 9router.service
+
+[Service]
+ExecStart=/home/<user>/muse-bridge/run-tunnel.sh
+Restart=always
+RestartSec=5
+User=root
+Environment=HOME=/home/<user>
+EnvironmentFile=/home/<user>/muse-bridge/proxy.env
+
+[Install]
+WantedBy=default.target
