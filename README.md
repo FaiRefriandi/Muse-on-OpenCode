@@ -201,13 +201,6 @@ Honest limits of this design:
 - The bridge itself only listens on `127.0.0.1`; only 9Router is tunneled.
 - Worker keys and user keys are separate roles. Rotate with `bridge.py keydel` + `keygen` if one leaks.
 
-## Credits
-
-- Based on [Kutuyyy/Muse-on-9Router-Hermes-Agent-ai](https://github.com/Kutuyyy/Muse-on-9Router-Hermes-Agent-ai) (`bridge.py` v5.1), extended here with OpenAI tool calling, progress and reasoning streaming, token usage estimates, and higher limits.
-- [9Router](https://github.com/decolua/9router) as the API gateway.
-- [OpenCode](https://opencode.ai) as the terminal agent.
-- [localhost.run](https://localhost.run) for the stable free tunnel.
-
 ## License
 
 MIT. See [LICENSE](LICENSE).

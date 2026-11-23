@@ -2,8 +2,7 @@
 """Muse bridge: OpenAI-compatible endpoint + worker pull API.
 
 Part of Muse-on-OpenCode (https://github.com/FaiRefriandi/Muse-on-OpenCode).
-Based on bridge.py v5.1 from Kutuyyy/Muse-on-9Router-Hermes-Agent-ai,
-extended with tool calling, progress notes, reasoning, and token estimates.
+Includes OpenAI tool calling, progress notes, reasoning, and token estimates.
 
 How it works:
   OpenCode (laptop) -> tunnel -> 9Router (VM, :20128) -> this bridge (VM, :8765)
